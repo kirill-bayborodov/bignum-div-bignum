@@ -1,0 +1,3 @@
+[submodule "libs/bignum-common"]
+	path = libs/bignum-common
+	url = https://github.com/kirill-bayborodov/bignum-common.git

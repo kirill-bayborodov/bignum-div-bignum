@@ -1,0 +1,88 @@
+name: C/ASM CI
+
+on:
+  push:
+    branches: [ "main" ]
+    tags:    # релизы создаются при push тега вида v*
+      - 'v*'
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: 'recursive' # Важно для подключения bignum-common
+
+    - name: Install build dependencies
+      run: sudo apt-get update && sudo apt-get install -y build-essential yasm cppcheck 
+
+    - name: Build project (Release)
+      run: make build CONFIG=release
+    
+    - name: Run static analysis
+      run: make lint      
+
+    - name: Run unit tests (Release)
+      run: make test CONFIG=release
+
+    - name: Create distribution
+      run: make dist
+
+    - name: Upload dist artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: dist
+        path: dist
+
+  release:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')   # только для тегов вида v*
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: 'recursive'
+
+    - name: Install build dependencies
+      run: sudo apt-get update && sudo apt-get install -y build-essential yasm
+
+    - name: Download dist artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: dist
+        path: dist
+
+    - name: Pack dist
+      id: dist
+      run: |
+        ARCHIVE="lib-${{ github.event.repository.name }}-${{ github.ref_name }}.tar.gz"
+        tar -C dist -czf "$ARCHIVE" .
+        echo "archive=$ARCHIVE" >> $GITHUB_OUTPUT
+
+    - name: Create GitHub release
+      id: create_release
+      uses: actions/create-release@v1
+      with:
+        tag_name: ${{ github.ref_name }}
+        release_name: ${{ github.ref_name }}
+        body: Release for ${{ github.ref_name }}
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload dist archive as release asset
+      uses: actions/upload-release-asset@v1
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ${{ steps.dist.outputs.archive }}
+        asset_name: ${{ steps.dist.outputs.archive }}
+        asset_content_type: application/gzip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
