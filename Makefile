@@ -2,9 +2,16 @@
 
 # --- Configurable Variables ---
 CONFIG ?= debug
+# values: auto | yes | no
+USE_ASM ?= auto
 REPORT_NAME ?= current
+# values: no | address | undefined
+SAN ?= no
+# yes — прогнать *_mt тесты под valgrind --tool=helgrind
+HELGRIND ?= no
+VALGRIND ?= valgrind
 
-# --- Calculated Variables --
+# --- Calculated Variables ---
 REPOSITORY_NAME := $(notdir $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST))))))
 FAMILY_NAME := $(firstword $(subst -, ,$(REPOSITORY_NAME)))
 LIB_NAME := $(subst -,_,$(notdir $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))))
@@ -40,28 +47,51 @@ REPORTS_DIR = $(BENCH_DIR)/reports
 DIST_INCLUDE_DIR = $(DIST_DIR)/$(INCLUDE_DIR)
 DIST_LIB_DIR = $(DIST_DIR)/$(LIBS_DIR)
 
-# Собираем список всех объектных файлов, которые должны войти в библиотеку
 SUBMODULES  := $(patsubst $(LIBS_DIR)/%/,%,$(filter %/,$(wildcard $(LIBS_DIR)/*/)))
 SUBMODULES_INCLUDE_DIR := $(foreach d,$(SUBMODULES),$(LIBS_DIR)/$(d)/$(INCLUDE_DIR))
-OBJ_LIST    := $(filter-out $(COMMON_NAME),$(patsubst $(LIBS_DIR)/%/,%,$(filter %/,$(wildcard $(LIBS_DIR)/*/))))
+OBJ_LIST    := $(patsubst $(LIBS_DIR)/%/,%,$(filter %/,$(wildcard $(LIBS_DIR)/*/)))
 OBJECTS     := $(foreach d,$(OBJ_LIST),$(LIBS_DIR)/$(d)/$(BUILD_DIR)/$(subst -,_,$(d)).o)
 ASM_SOURCES := $(foreach d,$(OBJ_LIST),$(LIBS_DIR)/$(d)/$(SRC_DIR)/$(subst -,_,$(d)).asm)
+C_SOURCES   := $(foreach d,$(OBJ_LIST),$(LIBS_DIR)/$(d)/$(SRC_DIR)/$(subst -,_,$(d)).c)
 HEADERS     := $(foreach d,$(OBJ_LIST),$(LIBS_DIR)/$(d)/$(INCLUDE_DIR)/$(subst -,_,$(d)).h)
+# Собираем все заголовочные файлы сабмодулей
+SUBMODULES_HEADERS_RAW := $(foreach dir,$(SUBMODULES_INCLUDE_DIR),$(wildcard $(dir)/*.h))
+
+# Выносим bignum.h на первое место, а затем добавляем все остальные файлы
+SUBMODULES_HEADERS := $(filter $(COMMON_DIR)/$(INCLUDE_DIR)/$(FAMILY_NAME).h, $(SUBMODULES_HEADERS_RAW)) \
+                      $(filter-out $(COMMON_DIR)/$(INCLUDE_DIR)/$(FAMILY_NAME).h, $(SUBMODULES_HEADERS_RAW))
+
 
 # --- Source & Target Files ---
-ASM_SRC = $(SRC_DIR)/$(LIB_NAME).asm
+ASM_SRC := $(SRC_DIR)/$(LIB_NAME).asm
+
+ifeq ($(strip $(USE_ASM)),auto)
+    ifneq ($(wildcard $(ASM_SRC)),)
+        SRC_EXT := asm
+    else
+        SRC_EXT := c
+    endif
+else ifeq ($(strip $(USE_ASM)),yes)
+    SRC_EXT := asm
+else
+    SRC_EXT := c
+endif
+
+C_SRC = $(SRC_DIR)/$(LIB_NAME).$(SRC_EXT)
 HEADER = $(INCLUDE_DIR)/$(LIB_NAME).h
-OBJ = $(BUILD_DIR)/$(LIB_NAME).o 
-TEST_BINS = $(patsubst $(TESTS_DIR)/%.c, $(BIN_DIR)/%, $(wildcard $(TESTS_DIR)/*.c))
+FAMILY_HEADER = $(INCLUDE_DIR)/$(FAMILY_NAME).h
+OBJ = $(BUILD_DIR)/$(LIB_NAME).o
+
+TEST_SRCS := $(wildcard $(TESTS_DIR)/*.c)
+TEST_BINS_MT := $(filter $(TESTS_DIR)/%_mt.c,$(TEST_SRCS))
+TEST_BINS    := $(patsubst $(TESTS_DIR)/%.c,$(BIN_DIR)/%,$(TEST_SRCS))
+
 BENCH_BIN = bench_$(LIB_NAME)
 BENCH_BIN_ST = $(BIN_DIR)/$(BENCH_BIN)
 BENCH_BIN_MT = $(BIN_DIR)/$(BENCH_BIN)_mt
 BENCH_BINS = $(BENCH_BIN_ST) $(BENCH_BIN_MT)
 
-# --- Target Files ---
-# Имя финальной статической библиотеки
 STATIC_LIB = $(DIST_DIR)/lib$(LIB_NAME).a
-# Имя финального единого заголовочного файла
 SINGLE_HEADER = $(DIST_DIR)/$(LIB_NAME).h
 
 # --- Flags ---
@@ -69,18 +99,45 @@ CFLAGS_BASE = -std=c11 -Wall -Wextra -pedantic -I$(INCLUDE_DIR) $(addprefix -I ,
 ASFLAGS_BASE = -f elf64
 LDFLAGS = -no-pie -lm
 
-ifeq ($(CONFIG), release)
-    CFLAGS = $(CFLAGS_BASE) -O2 -march=native
+# --- Sanitizer flags ---
+ifeq ($(strip $(SAN)),address)
+    SAN_CFLAGS  := -fsanitize=address -g -O1 -fno-omit-frame-pointer
+    SAN_LDFLAGS := -fsanitize=address
+    SAN_LABEL   := AddressSanitizer
+else ifeq ($(strip $(SAN)),undefined)
+    SAN_CFLAGS  := -fsanitize=undefined -g -O1 -fno-omit-frame-pointer
+    SAN_LDFLAGS := -fsanitize=undefined
+    SAN_LABEL   := UndefinedBehaviorSanitizer
+else ifeq ($(strip $(SAN)),thread)
+    $(warning SAN=thread не инструментирует yasm. Используйте `make test_helgrind` для гонок.)
+    SAN_CFLAGS  :=
+    SAN_LDFLAGS :=
+    SAN_LABEL   := (none)
+else
+    SAN_CFLAGS  :=
+    SAN_LDFLAGS :=
+    SAN_LABEL   := (none)
+endif
+
+SAN_LOG_PREFIX := $(BIN_DIR)/sanitize_
+
+ifeq ($(strip $(CONFIG)), release)
+    CFLAGS = $(CFLAGS_BASE) -O2 -march=native $(SAN_CFLAGS)
     ASFLAGS = $(ASFLAGS_BASE)
 else
-    CFLAGS = $(CFLAGS_BASE) -g
+    CFLAGS = $(CFLAGS_BASE) -g $(SAN_CFLAGS)
     ASFLAGS = $(ASFLAGS_BASE) -g dwarf2
 endif
 
 CFLAGS += -Wl,-z,noexecstack
+LDFLAGS += $(SAN_LDFLAGS)
 
 # --- Perf-specific settings ---
-ASM_LABELS := $(shell grep -E '^[[:space:]]*\.[A-Za-z0-9_].*:' $(ASM_SRC) | sed -E 's/^[[:space:]]*\.([A-Za-z0-9_]+):/\1/; s/[[:space:]]\+/|/g' )
+ifeq ($(SRC_EXT),asm)
+ASM_LABELS := $(shell grep -E '^[[:space:]]*\.[A-Za-z0-9_].*:' $(ASM_SRC) 2>/dev/null | sed -E 's/^[[:space:]]*\.([A-Za-z0-9_]+):/\1/; s/[[:space:]]\+/|/g' )
+else
+ASM_LABELS :=
+endif
 space := $(empty) $(empty)
 ASM_LABELS := $(subst $(space),|,$(ASM_LABELS))
 
@@ -92,103 +149,198 @@ REPORT_FILE_MT = $(REPORTS_DIR)/$(REPORT_NAME)_mt.txt
 RECORD_OPT = -F 1000 -e cycles,cache-misses,branch-misses -g --call-graph fp
 REPORT_OPT = --percent-limit 1.0 --sort comm,dso,symbol --symbol-filter=$(PERF_SYMBOL_FILTER)
 
-.PHONY: all build lint test bench install dist clean help
+.PHONY: all build lint test test_sanitize test_helgrind bench install dist clean help show-calc
 
 all: build
 build: $(OBJ) $(OBJECTS)
 
+# --- Обычный прогон: однократно, без санитайзеров.
 test: $(TEST_BINS)
-	@echo "Running unit tests (CONFIG=$(CONFIG))..."
-	@for test in $(TEST_BINS); do ./$$test; done
+	@echo "=== Running unit tests (CONFIG=$(CONFIG), SAN=$(SAN_LABEL)) ==="
+	@total=0; fail=0; \
+	for t in $(TEST_BINS); do \
+	  total=$$((total+1)); \
+	  echo "--- $$t ---"; \
+	  if ./$$t; then :; else fail=$$((fail+1)); echo "*** $$t FAILED ***"; fi; \
+	done; \
+	echo "=== Summary: $$fail / $$total failed ==="; \
+	test $$fail -eq 0
 
-bench: clean $(BENCH_BINS) | $(REPORTS_DIR)
-	@echo "Running benchmarks for report: $(REPORT_NAME) (CONFIG=$(CONFIG))..."
+# --- Прогон под ASan/UBSan.
+# Логика: доверяем exit code санитайзера. ASan при наличии проблемы
+# возвращает ненулевой код (по умолчанию halt_on_error=1), UBSan — тоже.
+# halt_on_error=0 нужен, чтобы при ОДНОЙ найденной проблеме прогон
+# продолжился и мы увидели ВСЕ проблемы, а не упали на первой.
+# Exit code в этом случае = 0 (тест формально прошёл), поэтому после
+# прогона проверяем stderr на маркеры санитайзера, которые пишутся
+# ТОЛЬКО при реальных проблемах ("==PID==ERROR:", "runtime error:", "leak").
+# Использование:
+#   make test_sanitize SAN=address
+#   make test_sanitize SAN=undefined CONFIG=debug
+test_sanitize: $(TEST_BINS)
+	@echo "=== Running tests under $(SAN_LABEL) (CONFIG=$(CONFIG)) ==="
+	@total=0; fail=0; san_fail=0; \
+	for t in $(TEST_BINS); do \
+	  total=$$((total+1)); \
+	  name=$$(basename $$t); \
+	  log=$(SAN_LOG_PREFIX)$$name.log; \
+	  echo "--- $$t (log: $$log) ---"; \
+	  rm -f $$log; \
+	  ASAN_OPTIONS=halt_on_error=0:detect_leaks=1:abort_on_error=0 \
+	  UBSAN_OPTIONS=halt_on_error=0:print_stacktrace=1:abort_on_error=0 \
+	    ./$$t > $$log 2>&1; \
+	  rc=$$?; \
+	  # Маркеры, которые санитайзеры пишут ТОЛЬКО при реальных проблемах. \
+	  # Эти строки не встречаются в обычном выводе тестов. \
+	  if grep -qE '(==[0-9]+==(ERROR|WARNING|runtime error|AddressSanitizer|LeakSanitizer)|SUMMARY: AddressSanitizer|runtime error:|leak [A-Za-z]+ detected)' $$log; then \
+	    echo "  SANITIZER ISSUE (rc=$$rc, see $$log)"; \
+	    san_fail=$$((san_fail+1)); \
+	  elif [ $$rc -ne 0 ]; then \
+	    echo "  TEST FAILED (rc=$$rc, see $$log)"; \
+	    fail=$$((fail+1)); \
+	  else \
+	    echo "  OK"; \
+	  fi; \
+	done; \
+	echo "=== Summary: tests=$$total, failed=$$fail, sanitizer_issues=$$san_fail ==="; \
+	test $$fail -eq 0 && test $$san_fail -eq 0
+
+# --- Прогон *_mt тестов под Helgrind.
+# Использование:
+#   make test_helgrind
+# Требования: valgrind (apt install valgrind).
+test_helgrind: $(TEST_BINS)
+	@echo "=== Running MT tests under Helgrind (CONFIG=$(CONFIG)) ==="
+	@total=0; fail=0; \
+	mt_binaries="$(patsubst $(TESTS_DIR)/%.c,$(BIN_DIR)/%,$(TEST_BINS_MT))"; \
+	for t in $$mt_binaries; do \
+	  if [ ! -x $$t ]; then continue; fi; \
+	  total=$$((total+1)); \
+	  name=$$(basename $$t); \
+	  log=$(BIN_DIR)/helgrind_$$name.log; \
+	  echo "--- $$t (log: $$log) ---"; \
+	  rm -f $$log; \
+	  if $(VALGRIND) --tool=helgrind --error-exitcode=42 --log-file=$$log ./$$t > /dev/null 2>&1; then \
+	    echo "  OK (no races detected)"; \
+	  else \
+	    rc=$$?; \
+	    if [ $$rc -eq 42 ]; then \
+	      echo "  RACE DETECTED (see $$log)"; fail=$$((fail+1)); \
+	    else \
+	      echo "  TEST FAILED (rc=$$rc, see $$log)"; fail=$$((fail+1)); \
+	    fi; \
+	  fi; \
+	done; \
+	echo "=== Summary: $$fail / $$total helgrind runs found races ==="; \
+	test $$fail -eq 0
+
+# rev.12: clean убран из зависимостей; ST и MT — отдельные таргеты;
+# MT бенмарк собирается с -pthread.
+bench: bench_st bench_mt | $(REPORTS_DIR)
+	@echo ""
+	@echo "Both bench reports written to $(REPORTS_DIR)/"
+	@ls -l $(REPORTS_DIR)/$(REPORT_NAME)_*.txt
+
+bench_st: $(BENCH_BIN_ST)
+	@echo "=== ST benchmark for report: $(REPORT_NAME) (CONFIG=$(CONFIG)) ==="
 	@sudo sysctl -w kernel.perf_event_max_sample_rate=10000 > /dev/null
-	@# --- Single-threaded ---
 	@taskset 0x1 $(PERF) record $(RECORD_OPT) -o $(PERF_DATA_ST) -- $(BENCH_BIN_ST)
 	@$(PERF) report -i $(PERF_DATA_ST) $(REPORT_OPT) --dsos $(BENCH_BIN) --stdio > $(REPORT_FILE_ST)
 	@$(RM) $(PERF_DATA_ST)
-	@# --- Multi-threaded ---
+	@echo "ST report: $(REPORT_FILE_ST)"
+
+bench_mt: $(BENCH_BIN_MT)
+	@echo "=== MT benchmark for report: $(REPORT_NAME) (CONFIG=$(CONFIG)) ==="
 	@taskset --cpu-list 1-$(NP) $(PERF) record $(RECORD_OPT) -o $(PERF_DATA_MT) -- $(BENCH_BIN_MT)
-	@$(PERF) report -i $(PERF_DATA_MT) $(REPORT_OPT) --dsos $(BENCH_BIN)_mt  --stdio > $(REPORT_FILE_MT)
+	@$(PERF) report -i $(PERF_DATA_MT) $(REPORT_OPT) --dsos $(BENCH_BIN)_mt --stdio > $(REPORT_FILE_MT)
 	@$(RM) $(PERF_DATA_MT)
-	@echo "Reports saved. Temporary perf data removed."
+	@echo "MT report: $(REPORT_FILE_MT)"
 
 install: clean $(OBJ) $(OBJECTS) | $(DIST_INCLUDE_DIR) $(DIST_LIB_DIR)
 	@printf "%s" "Installing product to $(DIST_DIR)/ (CONFIG=$(CONFIG))..."
-	@cp $(HEADER) $(foreach dir,$(SUBMODULES_INCLUDE_DIR),$(wildcard $(dir)/*.h)) $(DIST_INCLUDE_DIR)/
+	@if [ -f "$(INCLUDE_DIR)/$(FAMILY_NAME).h" ]; then \
+		cp "$(INCLUDE_DIR)/$(FAMILY_NAME).h" "$(DIST_INCLUDE_DIR)/"; \
+	fi	
+	@cp $(HEADER) $(SUBMODULES_HEADERS) $(DIST_INCLUDE_DIR)/
 	@cp $(OBJ) $(OBJECTS) $(DIST_LIB_DIR)/
 	@echo "Ok"
 	@tree $(DIST_DIR)/
-# Компилируем тест-раннер в dist, линкуя объектник из dist и тестируем сборку
 	@cp $(TESTS_DIR)/test_$(LIB_NAME)_runner.c $(DIST_DIR)/
 	@$(CC) $(DIST_DIR)/test_$(LIB_NAME)_runner.c  $(DIST_DIR)/$(LIBS_DIR)/*.o -I$(DIST_DIR)/$(INCLUDE_DIR) -o $(DIST_DIR)/test_$(LIB_NAME)_runner -no-pie
-	@$(DIST_DIR)/test_$(LIB_NAME)_runner	
+	@$(DIST_DIR)/test_$(LIB_NAME)_runner
 	@$(RM) $(DIST_DIR)/test_$(LIB_NAME)_runner
 
 dist: clean
 	@echo "Creating single-file header distribution in $(DIST_DIR)/ (CONFIG=$(CONFIG))..."
 	@$(MKDIR) $(DIST_DIR)
-# 1. Собираем объектный файл в release-конфигурации
 	@$(MAKE) -s build CONFIG=release
-
-# 2. Удаляем всю лишнюю информацию из объектного файла
 	@printf "%s" "Stripping object files, keeping symbol $(LIB_NAME)..."
-	@$(STRIP) --strip-debug $(OBJ) $(OBJECTS) || true; 
-	@$(STRIP) --strip-unneeded $(OBJ) $(OBJECTS) || true;  
+	@$(STRIP) --strip-debug $(OBJ) $(OBJECTS) || true;
+	@$(STRIP) --strip-unneeded $(OBJ) $(OBJECTS) || true;
 	@echo "Ok"
-# 3. Создаем статическую библиотеку
 	@printf "%s" "Create static library lib$(LIB_NAME).a ..."
 	@$(AR) rcs $(STATIC_LIB) $(OBJ) $(OBJECTS)
 	@$(RL) $(STATIC_LIB)
 	@echo "Ok"
-	@$(NM) -g --defined-only  $(STATIC_LIB)		 
-# 4. Создаем КОРРЕКТНЫЙ единый заголовочный файл
+	@$(NM) -g --defined-only  $(STATIC_LIB)
 	@printf "%s"  "Generating single-file header..."
-# 4.1. Начинаем с единого include guard
 	@echo "#ifndef $(UPPER_LIB_NAME)_SINGLE_H" > $(SINGLE_HEADER)
 	@echo "#define $(UPPER_LIB_NAME)_SINGLE_H" >> $(SINGLE_HEADER)
 	@echo "" >> $(SINGLE_HEADER)
-
-# 4.2. Вставляем содержимое bignum.h, но БЕЗ его собственных include guards
-	@echo "/* --- Included from libs/bignum-common/include/bignum.h --- */" >> $(SINGLE_HEADER)
-# sed удаляет строки, содержащие BIGNUM_H
-	@sed '/BIGNUM_H/d' $(COMMON_DIR)/$(INCLUDE_DIR)/$(FAMILY_NAME).h >> $(SINGLE_HEADER)
-	@echo "" >> $(SINGLE_HEADER)
-
-# 4.3. Вставляем содержимое $(LIB_NAME).h, но БЕЗ его include guards и БЕЗ #include "bignum.h"
+	@if [ -f "$(INCLUDE_DIR)/$(FAMILY_NAME).h" ]; then \
+		echo "/* --- Included from /include/$(FAMILY_NAME).h --- */" >> $(SINGLE_HEADER); \
+		sed -e '/BIGNUM_H/d' "$(INCLUDE_DIR)/$(FAMILY_NAME).h" >> $(SINGLE_HEADER); \
+	fi	
+	@if [ -f $(COMMON_DIR)/$(INCLUDE_DIR)/$(FAMILY_NAME).h ]; then \
+	echo "/* --- Included from libs/$(COMMON_NAME)/include/$(FAMILY_NAME).h --- */" >> $(SINGLE_HEADER); \
+	sed -e '/BIGNUM_H/d' -e '/BIGNUM_COMMON_H/d' -e '/#include "$(FAMILY_NAME).h"/d' -e '/#include <$(FAMILY_NAME).h>/d' $(SUBMODULES_HEADERS) >> $(SINGLE_HEADER); \
+	echo "" >> $(SINGLE_HEADER); \
+	else \
+	echo "/* --- No family header at $(COMMON_DIR)/$(INCLUDE_DIR)/$(FAMILY_NAME).h — skipped --- */" >> $(SINGLE_HEADER); \
+	fi
 	@echo "/* --- Included from include/$(LIB_NAME).h --- */" >> $(SINGLE_HEADER)
-# sed удаляет строки с BIGNUM_SHIFT_LEFT_H и #include "bignum.h"
-	@sed -e '/$(UPPER_LIB_NAME)_H/d' -e '/#include <$(FAMILY_NAME).h>/d' $(HEADER) >> $(SINGLE_HEADER)
+	@sed -e '/$(UPPER_LIB_NAME)_H/d' -e '/#include <$(FAMILY_NAME).h>/d' -e '/#include "$(FAMILY_NAME).h"/d' $(HEADER) >> $(SINGLE_HEADER)
 	@echo "" >> $(SINGLE_HEADER)
-
-# 4.4. Закрываем единый include guard
 	@echo "#endif // $(UPPER_LIB_NAME)_SINGLE_H" >> $(SINGLE_HEADER)
 	@echo "Ok"
-# 5. Копируем README и LICENSE
 	@cp README.md $(DIST_DIR)/
 	@cp LICENSE $(DIST_DIR)/
-# 6. Компилируем тест-раннер в dist, статически линкуя библиотеку из dist и тестируем сборку с библиотекой
 	@cp $(TESTS_DIR)/test_$(LIB_NAME)_runner.c $(DIST_DIR)/
 	@$(CC) $(DIST_DIR)/test_$(LIB_NAME)_runner.c -L$(DIST_DIR) -l$(LIB_NAME) -o $(DIST_DIR)/test_$(LIB_NAME)_runner -no-pie
-	@$(DIST_DIR)/test_$(LIB_NAME)_runner	
+	@$(DIST_DIR)/test_$(LIB_NAME)_runner
 	@$(RM) $(DIST_DIR)/test_$(LIB_NAME)_runner
-
 	@echo "Distribution created successfully in $(DIST_DIR)/ "
 	@ls -l $(DIST_DIR)
 
 # --- Compilation Rules ---
-$(OBJ): $(ASM_SRC) 
-	@echo "Builds the main object file 'build/$(LIB_NAME).o' (CONFIG=$(CONFIG))..." 
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
+	@echo "Compiling C: $< -> $@ (CONFIG=$(CONFIG))..."
 	@$(MKDIR) $(BUILD_DIR)
-	@$(AS) $(ASFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.asm
+	@echo "Assembling ASM: $< -> $@ (CONFIG=$(CONFIG))..."
+	@$(MKDIR) $(BUILD_DIR)
+	$(AS) $(ASFLAGS) -o $@ $<
+
+$(OBJ): $(C_SRC)
+	@echo "Builds the main object file '$(OBJ)' (CONFIG=$(CONFIG))..."
+	@$(MKDIR) $(BUILD_DIR)
+ifeq ($(SRC_EXT),c)
+	$(CC) $(CFLAGS) -c $(C_SRC) -o $(OBJ)
+else
+	$(AS) $(ASFLAGS) -o $(OBJ) $(C_SRC)
+endif
+
 $(OBJECTS): $(ASM_SOURCES)
 	@echo "Building submodules... (CONFIG=$(CONFIG))... "
 	@$(foreach d,$(OBJ_LIST), \
 	  (echo "\tBuild for $(d) ..." && $(MAKE) -C $(LIBS_DIR)/$(d) -s build CONFIG=release CFLAGS+=-Wl,-z,noexecstack) || echo "\n\t\t⚠️  $(d) no rule build\n"; \
-	)	
+	)
 $(BIN_DIR)/%: $(TESTS_DIR)/%.c $(OBJ) $(OBJECTS) | $(BIN_DIR)
-	@$(CC) $(CFLAGS) $< $(OBJECTS) $(OBJ) -o $@ $(LDFLAGS) $(if $(filter %_mt,$*),-pthread)
+	@$(MKDIR) $(BIN_DIR)
+	@$(CC) $(CFLAGS) $< $(OBJECTS) $(OBJ) -o $@ $(LDFLAGS) \
+	  $(if $(filter %_mt,$*),-pthread)
 $(BIN_DIR)/bench_%: $(BENCH_DIR)/bench_%.c $(OBJ) $(OBJECTS) | $(BIN_DIR)
 	@$(MAKE) -s build CONFIG=debug
 	@$(CC) $(CFLAGS) -g $< $(OBJECTS) $(OBJ) -o $@ $(LDFLAGS) $(if $(filter %_mt,$*),-pthread)
@@ -202,12 +354,12 @@ lint:
 	@$(CPPCHECK) --std=c11 --enable=all --error-exitcode=1 --suppress=missingIncludeSystem \
 	    --inline-suppr --inconclusive --check-config \
 	    -I$(INCLUDE_DIR) $(addprefix -I , $(SUBMODULES_INCLUDE_DIR)) \
-	    $(TESTS_DIR)/ $(BENCH_DIR)/ $(DIST_DIR)/
+	    $(TESTS_DIR)/ $(BENCH_DIR)/ $(DIST_DIR)/ $(SRC_DIR)/
 
 clean:
 	@echo "Cleaning up build artifacts (build/, bin/, dist/)..."
 	@$(RM) $(BUILD_DIR) $(BIN_DIR) $(DIST_DIR)
-	@echo "Cleaning up submodule artifacts:" ; 		
+	@echo "Cleaning up submodule artifacts:" ;
 	@$(foreach d,$(OBJ_LIST), \
 	  (printf "%s" "Clean for $(d) : " && $(MAKE) -C $(LIBS_DIR)/$(d) -s clean) || echo "\n\t\t⚠️  $(d) has no rule clean\n"; \
 	)
@@ -216,36 +368,51 @@ help:
 	@echo "Usage: make <target> [CONFIG=release] [REPORT_NAME=my_report]"
 	@echo ""
 	@echo "Main Targets:"
-	@echo "  all/build    Builds the main object file 'build/bignum_shift_left.o'."
-	@echo "  lint         Running static analysis on C source files"
-	@echo "  test         Builds and runs all unit tests from the 'tests/' directory."
-	@echo "  bench        Builds and runs performance benchmarks, generating named reports."
-	@echo "  install      Packages the product into the 'dist/' directory for internal use."
-	@echo "  dist         Packages the product into the 'dist/' directory for external use. (single-header, static-lib)"    
-	@echo "  clean        Removes all temporary build files and the 'dist/' directory."
-	@echo "  help         Shows this help message."
+	@echo "  all/build      Builds the main object file."
+	@echo "  lint           Static analysis on C sources."
+	@echo "  test           Builds and runs all unit tests."
+	@echo "  test_sanitize  Runs tests under sanitizer: make test_sanitize SAN={address|undefined}"
+	@echo "  test_helgrind  Runs *_mt tests under valgrind --tool=helgrind for race detection."
+	@echo "  bench          Runs performance benchmarks with perf."
+	@echo "  install        Installs product into dist/ for internal use."
+	@echo "  dist           Builds a single-header + static-lib distribution in dist/."
+	@echo "  clean          Removes build/, bin/, dist/."
+	@echo "  help           Shows this help message."
+	@echo ""
+	@echo "Logs:"
+	@echo "  Sanitizer logs: \$$(BIN_DIR)/sanitize_<test>.log"
+	@echo "  Helgrind logs:  \$$(BIN_DIR)/helgrind_<test>_mt.log"
 	@echo ""
 	@echo "Optimization Cycle Example:"
 	@echo "  1. make bench REPORT_NAME=baseline"
 	@echo "  2. ...edit code..."
 	@echo "  3. make test"
 	@echo "  4. make bench REPORT_NAME=opt_v1"
-	@echo "  5. diff -u benchmarks/reports/baseline_st.txt benchmarks/reports/opt_v1_st.txt"
+	@echo "  5. diff -u benchmarks/reports/baseline_st.txt benchmarks/reports/opt_v1_st.txt"	
 
-# Тестовый таргет для вычисляемых переменных
-.PHONY: show-calc
 show-calc:
 	@echo "REPOSITORY_NAME = $(REPOSITORY_NAME)"
-	@echo "FAMILY_NAME = $(FAMILY_NAME)"	
+	@echo "FAMILY_NAME = $(FAMILY_NAME)"
 	@echo "LIB_NAME = $(LIB_NAME)"
-	@echo "UPPER_LIB_NAME = $(UPPER_LIB_NAME)"	
+	@echo "UPPER_LIB_NAME = $(UPPER_LIB_NAME)"
 	@echo "NP = $(NP)"
 	@echo "ASM_LABELS = $(ASM_LABELS)"
 	@echo "Количество меток: $(words $(subst |, ,$(ASM_LABELS)))"
-	@echo "OBJECTS = $(OBJECTS)"
-	@echo "OBJ_LIST = $(OBJ_LIST)"	
-	@echo "ASM_SOURCES = $(ASM_SOURCES)"
-	@echo "HEADERS = $(HEADERS)"			
 	@echo "OBJ = $(OBJ)"
-	@echo "SUBMODULES_INCLUDE_DIR = $(SUBMODULES_INCLUDE_DIR)"	
-	@echo "	$(foreach dir,$(SUBMODULES_INCLUDE_DIR),$(wildcard $(dir)/*.h))	"
+	@echo "OBJECTS = $(OBJECTS)"
+	@echo "OBJ_LIST = $(OBJ_LIST)"
+	@echo "ASM_SOURCES = $(ASM_SOURCES)"
+	@echo "C_SRC = $(C_SRC)"
+	@echo "HEADER = $(HEADER)"
+	@echo "FAMILY_HEADER = $(FAMILY_HEADER)"
+	@echo "HEADERS = $(HEADERS)"
+	@echo "SRC_EXT = $(SRC_EXT)"
+	@echo "USE_ASM = $(USE_ASM)"
+	@echo "ASM_SRC = $(ASM_SRC)"
+	@echo "SUBMODULES = $(SUBMODULES)"
+	@echo "SUBMODULES_INCLUDE_DIR = $(SUBMODULES_INCLUDE_DIR)"
+	@echo "SUBMODULES_HEADERS = $(SUBMODULES_HEADERS)"
+	@echo "TEST_BINS_MT = $(TEST_BINS_MT)"
+	@echo "TEST_BINS = $(TEST_BINS)"
+	@echo "SAN = $(SAN) ($(SAN_LABEL))"
+	@echo "HELGRIND = $(HELGRIND)"

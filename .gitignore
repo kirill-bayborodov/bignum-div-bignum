@@ -62,3 +62,7 @@ context/
 # Performance reports
 benchmarks/reports
 doc/report_bench_*.txt
+
+# Development files
+*.old
+*.rev*
