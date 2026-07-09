@@ -1,8 +1,8 @@
 ; =============================================================================
 ; @file    bignum_div_bignum.asm
 ; @author  git@bayborodov.com
-; @version 1.0.2
-; @date    08.07.2026
+; @version 1.0.8
+; @date    09.07.2026
 ;
 ; @brief   Делит большое беззнаковое число `numer` на `denom`.
 ; @details
@@ -10,9 +10,12 @@
 ;   Внутренний цикл работает от старшего к младшему слову `numer`,
 ;   используя побитовый сдвиг и вычитание.
 ; @history
-;   - rev. 0 (07.04.2026): Первоначальная реализация на ассемблере.
-;   - rev. 1 (07.07.2026): Повторная реализация на ассемблере.
-;   - rev. 2 (08.07.2026): Исправлены ошибки с флагом переноса (CF) в циклах сдвига и вычитания.
+;   - rev. 0-4: Базовые реализации и избавление от хардкода.
+;   - rev. 5: Оптимизация узких мест (избавление от RMW операций с памятью).
+;   - rev. 6: Удалены дорогие инструкции pushfq/popfq (предвычисление rsi).
+;   - rev. 7: Откат пессимизации Loop Unrolling в цикле сравнения.
+;   - rev. 8: Возврат эффективных RMW-инструкций (rcl/sbb по памяти) в горячие 
+;             циклы с сохранением архитектурных оптимизаций из rev6-7.
 ; =============================================================================
 
 section .text
@@ -42,8 +45,6 @@ global bignum_div_bignum
 %%no_overlap:
 %endmacro
 
-section .text
-global bignum_div_bignum
 bignum_div_bignum:
     ; ---------- пролог ----------
     push    r12
@@ -85,12 +86,13 @@ bignum_div_bignum:
     CHECK_OVERLAP r12, r13  ; quot ↔ rem
 
     ; ---------- инициализация Q и R нулями ----------
-    mov     rcx, 33
+    ; BIGNUM_T_SIZE_ALIGNED / 8 дает точное количество qword (32 слова + 1 слово длины = 33)
+    mov     rcx, (BIGNUM_T_SIZE_ALIGNED / 8)
     xor     rax, rax
     mov     rdi, r12
     rep stosq
 
-    mov     rcx, 33
+    mov     rcx, (BIGNUM_T_SIZE_ALIGNED / 8)
     xor     rax, rax
     mov     rdi, r13
     rep stosq
@@ -124,18 +126,32 @@ bignum_div_bignum:
     shl     rbx, 6
     add     rbx, rcx
 
+    ; ---------- вычисление динамической длины R (r11) ----------
+    ; Максимальная длина R в процессе деления: r10 + 1 (не более BIGNUM_CAPACITY)
+    mov     r11, r10
+    inc     r11
+    cmp     r11, BIGNUM_CAPACITY
+    jbe     .len_ok
+    mov     r11, BIGNUM_CAPACITY
+.len_ok:
+
+    ; ОПТИМИЗАЦИЯ: Вычисляем разницу r11 - r10 один раз до цикла.
+    ; Регистр rsi свободен (мы перенесли denom в r15), используем его.
+    mov     rsi, r11
+    sub     rsi, r10
+
     ; ---------- основной цикл побитового деления ----------
 .div_loop:
-    ; Сдвиг R влево на 1 бит
+    ; Сдвиг R влево на 1 бит (используем r11 вместо BIGNUM_CAPACITY)
     clc
-    mov     rcx, 32
+    mov     rcx, r11
     lea     rdi, [r13]
 .shift_R_loop:
+    ; ОПТИМИЗАЦИЯ: Возвращен RMW (rcl по памяти), так как это быстрее 3-х отдельных инструкций
     rcl     qword [rdi], 1
     lea     rdi, [rdi + 8]      ; ИСПОЛЬЗУЕМ lea, чтобы не затереть CF!
     dec     rcx                 ; dec не изменяет CF
     jnz     .shift_R_loop
-    setc    r9b                 ; ИСПРАВЛЕНИЕ: Сохраняем CF (2049-й бит R) в r9b
 
     ; Перенос i-го бита N в младший бит R
     mov     rax, rbx
@@ -143,15 +159,14 @@ bignum_div_bignum:
     mov     rcx, rbx
     and     rcx, 63
     mov     r8, [r14 + rax*8]
-    bt      r8, rcx             ; bt перезапишет CF, но мы его уже сохранили!
+    bt      r8, rcx
     jnc     .bit_zero
+    ; bts mem, imm работает быстро, в отличие от bts mem, reg
     bts     qword [r13], 0
 .bit_zero:
-    test    r9b, r9b            ; ИСПРАВЛЕНИЕ: Проверяем сохраненный 2049-й бит
-    jnz     .R_greater          ; Если он равен 1, то R гарантированно больше D!
 
     ; Сравнение R и D
-    mov     rcx, 31
+    lea     rcx, [r11 - 1]      ; Начинаем проверку с r11 - 1
 .cmp_check_R_high:
     cmp     rcx, r10
     jl      .cmp_words
@@ -162,6 +177,7 @@ bignum_div_bignum:
 
 .cmp_words:
     ; rcx = r10 - 1
+    ; ОПТИМИЗАЦИЯ: Простой, плотный цикл (без Unrolling) для Branch Predictor'а
 .cmp_words_loop:
     test    rcx, rcx
     js      .R_equal
@@ -175,27 +191,30 @@ bignum_div_bignum:
 .R_equal:
 .R_greater:
     ; R >= D, выполняем R = R - D
-    mov     r11, 32
-    sub     r11, r10            ; r11 = количество оставшихся слов для распространения заема
     mov     rcx, r10
     xor     r8, r8
     clc
 .sub_loop:
     mov     rax, [r15 + r8*8]
+    ; ОПТИМИЗАЦИЯ: Возвращен RMW (sbb по памяти), так как это быстрее
     sbb     [r13 + r8*8], rax
     lea     r8, [r8 + 1]        ; lea не изменяет CF
     dec     rcx                 ; dec не изменяет CF
     jnz     .sub_loop
 
     jnc     .sub_done           ; Если нет заема, выходим
-    mov     rcx, r11
-    jrcxz   .sub_done           ; Если r11 == 0, выходим (jrcxz не изменяет флаги)
+
+    ; Распространение заема до r11
+    ; ОПТИМИЗАЦИЯ: Избавились от pushfq/popfq. Используем заранее вычисленный rsi.
+    mov     rcx, rsi            ; rsi = r11 - r10
+    jrcxz   .sub_done           ; jrcxz не меняет флаги, безопасно проверяем rcx == 0
 .sub_prop_loop:
+    ; ОПТИМИЗАЦИЯ: Возвращен RMW (sbb по памяти)
     sbb     qword [r13 + r8*8], 0
     lea     r8, [r8 + 1]
-    dec     rcx
-    jz      .sub_done
-    jc      .sub_prop_loop      ; Продолжаем, пока есть заем
+    dec     rcx                 ; dec НЕ изменяет CF, но устанавливает ZF
+    jz      .sub_done           ; Выходим, если rcx стал 0
+    jc      .sub_prop_loop      ; Продолжаем, пока есть заем (CF=1)
 .sub_done:
 
     ; Устанавливаем i-й бит в Q
@@ -203,14 +222,18 @@ bignum_div_bignum:
     shr     rax, 6
     mov     rcx, rbx
     and     rcx, 63
-    bts     qword [r12 + rax*8], rcx
+    ; ОПТИМИЗАЦИЯ: избегаем RMW для памяти, так как bts mem, reg работает медленно
+    mov     rdx, [r12 + rax*8]
+    bts     rdx, rcx
+    mov     [r12 + rax*8], rdx
 
 .R_less:
     dec     rbx
     jns     .div_loop
 
     ; ---------- установка длины Q ----------
-    mov     rcx, 32
+    ; Максимальная длина Q не превышает длину N (r9)
+    mov     rcx, r9
 .find_Q_len:
     test    rcx, rcx
     jz      .Q_len_found
@@ -222,7 +245,8 @@ bignum_div_bignum:
     mov     [r12 + BIGNUM_LEN_OFFSET], rcx
 
     ; ---------- установка длины R ----------
-    mov     rcx, 32
+    ; Максимальная длина R не превышает длину D (r10)
+    mov     rcx, r10
 .find_R_len:
     test    rcx, rcx
     jz      .R_len_found

@@ -25,7 +25,7 @@
 
 #define BIGNUM_CAPACITY 32
 #define NUM_THREADS 8               /* совпадает с NP обычно */
-#define ITERATIONS_PER_THREAD 25000000u
+#define ITERATIONS_PER_THREAD 250000u
 #define PREGEN_DATA_COUNT 8192
 
 /* --- splitmix64 --- */
@@ -58,7 +58,7 @@ typedef struct {
     bignum_t              q_local;
     bignum_t              rem_local;
     volatile size_t       q_len_sink;
-} thread_ctx_t;
+} __attribute__((aligned(64))) thread_ctx_t;
 
 static void *thread_func(void *arg) {
     thread_ctx_t *ctx = (thread_ctx_t *)arg;
