@@ -20,6 +20,15 @@ Also available as a standalone distribution.
 -   **Continuous Integration:** All changes are automatically built and tested via GitHub Actions.
 -   **Static Analysis:** Code quality is enforced using `cppcheck` for all C-based test files.
 
+## Architecture & Optimizations
+
+This module is heavily optimized for modern x86-64 processors. Key architectural decisions include:
+
+- **Knuth's Algorithm D:** The core division logic implements Donald Knuth's Algorithm D (from *The Art of Computer Programming, Vol. 2*). It normalizes the operands, estimates the quotient word-by-word, and performs highly efficient multiply-subtract loops.
+- **Loop Unrolling:** The hottest execution path (the multiply-subtract inner loop) is unrolled (x2) to minimize loop control overhead (branching and increments) and maximize Instruction-Level Parallelism (ILP).
+- **Avoiding Microcoded Shifts:** Bitwise shifts across word boundaries (during normalization and denormalization) deliberately avoid the `shld`/`shrd` instructions. Although these instructions reduce code size, they are microcoded on modern architectures (Intel Core, AMD Zen) and incur higher latency. Using explicit `shl`, `shr`, and `or` sequences yields significantly better throughput.
+- **Optimized Memory Access (RMW):** Direct Read-Modify-Write memory operations (e.g., `sub [mem], reg`) in hot loops are replaced with explicit `mov -> sub -> mov` sequences. This reduces pressure on the CPU's Store Buffers and Load/Store units, giving the Out-of-Order (OoO) scheduler more freedom and preventing resource stalls, especially in multithreaded (Hyper-Threading) environments.
+
 ## Dependencies
 
 -   **Build-time:** `make`, `gcc`, `yasm`, `cppcheck`.

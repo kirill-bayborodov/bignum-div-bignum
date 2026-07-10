@@ -335,7 +335,7 @@ endif
 $(OBJECTS): $(ASM_SOURCES)
 	@echo "Building submodules... (CONFIG=$(CONFIG))... "
 	@$(foreach d,$(OBJ_LIST), \
-	  (echo "\tBuild for $(d) ..." && $(MAKE) -C $(LIBS_DIR)/$(d) -s build CONFIG=release CFLAGS+=-Wl,-z,noexecstack) || echo "\n\t\t⚠️  $(d) no rule build\n"; \
+	  (echo "\tBuild for $(d) ..." && $(MAKE) -C $(LIBS_DIR)/$(d) -s build CONFIG=release USE_ASM=auto CFLAGS+=-Wl,-z,noexecstack) || echo "\n\t\t⚠️  $(d) no rule build\n"; \
 	)
 $(BIN_DIR)/%: $(TESTS_DIR)/%.c $(OBJ) $(OBJECTS) | $(BIN_DIR)
 	@$(MKDIR) $(BIN_DIR)
