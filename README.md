@@ -1,4 +1,3 @@
-```markdown
 # bignum-div-bignum
 
 [![C/ASM CI](https://github.com/kirill-bayborodov/bignum-div-bignum/actions/workflows/ci.yml/badge.svg)](https://github.com/kirill-bayborodov/bignum-div-bignum/actions/workflows/ci.yml)
