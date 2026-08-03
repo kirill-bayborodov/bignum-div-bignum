@@ -14,6 +14,7 @@ VALGRIND ?= valgrind
 # --- Calculated Variables ---
 REPOSITORY_NAME := $(notdir $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST))))))
 FAMILY_NAME := $(firstword $(subst -, ,$(REPOSITORY_NAME)))
+UPPER_FAMILY_NAME := $(subst z,Z,$(subst y,Y,$(subst x,X,$(subst w,W,$(subst v,V,$(subst u,U,$(subst t,T,$(subst s,S,$(subst r,R,$(subst q,Q,$(subst p,P,$(subst o,O,$(subst n,N,$(subst m,M,$(subst l,L,$(subst k,K,$(subst j,J,$(subst i,I,$(subst h,H,$(subst g,G,$(subst f,F,$(subst e,E,$(subst d,D,$(subst c,C,$(subst b,B,$(subst a,A,$(FAMILY_NAME)))))))))))))))))))))))))))
 LIB_NAME := $(subst -,_,$(notdir $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))))
 UPPER_LIB_NAME := $(subst z,Z,$(subst y,Y,$(subst x,X,$(subst w,W,$(subst v,V,$(subst u,U,$(subst t,T,$(subst s,S,$(subst r,R,$(subst q,Q,$(subst p,P,$(subst o,O,$(subst n,N,$(subst m,M,$(subst l,L,$(subst k,K,$(subst j,J,$(subst i,I,$(subst h,H,$(subst g,G,$(subst f,F,$(subst e,E,$(subst d,D,$(subst c,C,$(subst b,B,$(subst a,A,$(LIB_NAME)))))))))))))))))))))))))))
 NP := $(shell nproc | awk '{print $$1}')
@@ -49,11 +50,19 @@ DIST_LIB_DIR = $(DIST_DIR)/$(LIBS_DIR)
 
 SUBMODULES  := $(patsubst $(LIBS_DIR)/%/,%,$(filter %/,$(wildcard $(LIBS_DIR)/*/)))
 SUBMODULES_INCLUDE_DIR := $(foreach d,$(SUBMODULES),$(LIBS_DIR)/$(d)/$(INCLUDE_DIR))
-OBJ_LIST    := $(patsubst $(LIBS_DIR)/%/,%,$(filter %/,$(wildcard $(LIBS_DIR)/*/)))
-OBJECTS     := $(foreach d,$(OBJ_LIST),$(LIBS_DIR)/$(d)/$(BUILD_DIR)/$(subst -,_,$(d)).o)
-ASM_SOURCES := $(foreach d,$(OBJ_LIST),$(LIBS_DIR)/$(d)/$(SRC_DIR)/$(subst -,_,$(d)).asm)
-C_SOURCES   := $(foreach d,$(OBJ_LIST),$(LIBS_DIR)/$(d)/$(SRC_DIR)/$(subst -,_,$(d)).c)
-HEADERS     := $(foreach d,$(OBJ_LIST),$(LIBS_DIR)/$(d)/$(INCLUDE_DIR)/$(subst -,_,$(d)).h)
+SUBMODULES_INCLUDE_DIR += $(foreach d,$(SUBMODULES),$(LIBS_DIR)/$(d)/$(DIST_DIR))
+OBJ_LIST        := $(patsubst $(LIBS_DIR)/%/,%,$(filter %/,$(wildcard $(LIBS_DIR)/*/)))
+
+# Отделяем сабмодули с исходниками (есть Makefile) от вендорных (нет Makefile)
+SRC_SUBMODULES  := $(foreach d,$(OBJ_LIST),$(if $(wildcard $(LIBS_DIR)/$(d)/Makefile),$(d),))
+DIST_SUBMODULES := $(filter-out $(SRC_SUBMODULES),$(OBJ_LIST))
+
+# Собираем OBJECTS только для тех сабмодулей, у которых реально есть исходники в src/
+OBJECTS         := $(foreach d,$(SRC_SUBMODULES),$(if $(wildcard $(LIBS_DIR)/$(d)/src/$(subst -,_,$(d)).c $(LIBS_DIR)/$(d)/src/$(subst -,_,$(d)).asm),$(LIBS_DIR)/$(d)/build/$(subst -,_,$(d)).o,))
+
+#ASM_SOURCES := $(foreach d,$(OBJ_LIST),$(LIBS_DIR)/$(d)/$(SRC_DIR)/$(subst -,_,$(d)).asm)
+#C_SOURCES   := $(foreach d,$(OBJ_LIST),$(LIBS_DIR)/$(d)/$(SRC_DIR)/$(subst -,_,$(d)).c)
+#HEADERS     := $(foreach d,$(OBJ_LIST),$(LIBS_DIR)/$(d)/$(INCLUDE_DIR)/$(subst -,_,$(d)).h)
 # Собираем все заголовочные файлы сабмодулей
 SUBMODULES_HEADERS_RAW := $(foreach dir,$(SUBMODULES_INCLUDE_DIR),$(wildcard $(dir)/*.h))
 
@@ -98,6 +107,11 @@ SINGLE_HEADER = $(DIST_DIR)/$(LIB_NAME).h
 CFLAGS_BASE = -std=c11 -Wall -Wextra -pedantic -I$(INCLUDE_DIR) $(addprefix -I , $(SUBMODULES_INCLUDE_DIR))
 ASFLAGS_BASE = -f elf64
 LDFLAGS = -no-pie -lm
+
+# Динамически линкуем все вендорные библиотеки (те, что попали в DIST_SUBMODULES)
+# Заменяем дефисы на подчеркивания для имени библиотеки (например, bignum-common -> -lbignum_common)
+LDFLAGS += $(foreach d,$(DIST_SUBMODULES),-L$(LIBS_DIR)/$(d)/dist -l$(subst -,_,$(d)))
+
 
 # --- Sanitizer flags ---
 ifeq ($(strip $(SAN)),address)
@@ -243,6 +257,7 @@ bench: bench_st bench_mt | $(REPORTS_DIR)
 
 bench_st: $(BENCH_BIN_ST)
 	@echo "=== ST benchmark for report: $(REPORT_NAME) (CONFIG=$(CONFIG)) ==="
+	@$(MKDIR) $(REPORTS_DIR)
 	@sudo sysctl -w kernel.perf_event_max_sample_rate=10000 > /dev/null
 	@taskset 0x1 $(PERF) record $(RECORD_OPT) -o $(PERF_DATA_ST) -- $(BENCH_BIN_ST)
 	@$(PERF) report -i $(PERF_DATA_ST) $(REPORT_OPT) --dsos $(BENCH_BIN) --stdio > $(REPORT_FILE_ST)
@@ -251,10 +266,12 @@ bench_st: $(BENCH_BIN_ST)
 
 bench_mt: $(BENCH_BIN_MT)
 	@echo "=== MT benchmark for report: $(REPORT_NAME) (CONFIG=$(CONFIG)) ==="
+	@$(MKDIR) $(REPORTS_DIR)	
 	@taskset --cpu-list 1-$(NP) $(PERF) record $(RECORD_OPT) -o $(PERF_DATA_MT) -- $(BENCH_BIN_MT)
 	@$(PERF) report -i $(PERF_DATA_MT) $(REPORT_OPT) --dsos $(BENCH_BIN)_mt --stdio > $(REPORT_FILE_MT)
 	@$(RM) $(PERF_DATA_MT)
 	@echo "MT report: $(REPORT_FILE_MT)"
+
 
 install: clean $(OBJ) $(OBJECTS) | $(DIST_INCLUDE_DIR) $(DIST_LIB_DIR)
 	@printf "%s" "Installing product to $(DIST_DIR)/ (CONFIG=$(CONFIG))..."
@@ -263,6 +280,9 @@ install: clean $(OBJ) $(OBJECTS) | $(DIST_INCLUDE_DIR) $(DIST_LIB_DIR)
 	fi	
 	@cp $(HEADER) $(SUBMODULES_HEADERS) $(DIST_INCLUDE_DIR)/
 	@cp $(OBJ) $(OBJECTS) $(DIST_LIB_DIR)/
+	@$(foreach d,$(DIST_SUBMODULES), \
+		cd $(DIST_LIB_DIR) && $(AR) x ../../$(LIBS_DIR)/$(d)/dist/lib$(subst -,_,$(d)).a && cd ../..; \
+	)
 	@echo "Ok"
 	@tree $(DIST_DIR)/
 	@cp $(TESTS_DIR)/test_$(LIB_NAME)_runner.c $(DIST_DIR)/
@@ -270,8 +290,9 @@ install: clean $(OBJ) $(OBJECTS) | $(DIST_INCLUDE_DIR) $(DIST_LIB_DIR)
 	@$(DIST_DIR)/test_$(LIB_NAME)_runner
 	@$(RM) $(DIST_DIR)/test_$(LIB_NAME)_runner
 
+
 dist: clean
-	@echo "Creating single-file header distribution in $(DIST_DIR)/ (CONFIG=$(CONFIG))..."
+	@echo "Creating single-file header distribution in $(DIST_DIR)/ (CONFIG=$(CONFIG))...."
 	@$(MKDIR) $(DIST_DIR)
 	@$(MAKE) -s build CONFIG=release
 	@printf "%s" "Stripping object files, keeping symbol $(LIB_NAME)..."
@@ -280,6 +301,13 @@ dist: clean
 	@echo "Ok"
 	@printf "%s" "Create static library lib$(LIB_NAME).a ..."
 	@$(AR) rcs $(STATIC_LIB) $(OBJ) $(OBJECTS)
+	@$(foreach d,$(DIST_SUBMODULES), \
+	$(MKDIR) $(BUILD_DIR)/tmp_$(d) && \
+	cd $(BUILD_DIR)/tmp_$(d) && \
+	$(AR) x ../../$(LIBS_DIR)/$(d)/dist/lib$(subst -,_,$(d)).a && \
+	$(AR) r ../../$(STATIC_LIB) *.o && \
+	cd ../..; \
+	)
 	@$(RL) $(STATIC_LIB)
 	@echo "Ok"
 	@$(NM) -g --defined-only  $(STATIC_LIB)
@@ -288,18 +316,18 @@ dist: clean
 	@echo "#define $(UPPER_LIB_NAME)_SINGLE_H" >> $(SINGLE_HEADER)
 	@echo "" >> $(SINGLE_HEADER)
 	@if [ -f "$(INCLUDE_DIR)/$(FAMILY_NAME).h" ]; then \
-		echo "/* --- Included from /include/$(FAMILY_NAME).h --- */" >> $(SINGLE_HEADER); \
-		sed -e '/BIGNUM_H/d' "$(INCLUDE_DIR)/$(FAMILY_NAME).h" >> $(SINGLE_HEADER); \
-	fi	
+	echo "/* --- Included from /include/$(FAMILY_NAME).h --- */" >> $(SINGLE_HEADER); \
+	cat "$(INCLUDE_DIR)/$(FAMILY_NAME).h" >> $(SINGLE_HEADER); \
+	fi
 	@if [ -f $(COMMON_DIR)/$(INCLUDE_DIR)/$(FAMILY_NAME).h ]; then \
 	echo "/* --- Included from libs/$(COMMON_NAME)/include/$(FAMILY_NAME).h --- */" >> $(SINGLE_HEADER); \
-	sed -e '/BIGNUM_H/d' -e '/BIGNUM_COMMON_H/d' -e '/#include "$(FAMILY_NAME).h"/d' -e '/#include <$(FAMILY_NAME).h>/d' $(SUBMODULES_HEADERS) >> $(SINGLE_HEADER); \
+	sed -e '/#include "$(FAMILY_NAME).h"/d' -e '/#include <$(FAMILY_NAME).h>/d' $(SUBMODULES_HEADERS) >> $(SINGLE_HEADER); \
 	echo "" >> $(SINGLE_HEADER); \
 	else \
 	echo "/* --- No family header at $(COMMON_DIR)/$(INCLUDE_DIR)/$(FAMILY_NAME).h — skipped --- */" >> $(SINGLE_HEADER); \
 	fi
 	@echo "/* --- Included from include/$(LIB_NAME).h --- */" >> $(SINGLE_HEADER)
-	@sed -e '/$(UPPER_LIB_NAME)_H/d' -e '/#include <$(FAMILY_NAME).h>/d' -e '/#include "$(FAMILY_NAME).h"/d' $(HEADER) >> $(SINGLE_HEADER)
+	@sed -e '/#include <$(FAMILY_NAME).h>/d' -e '/#include "$(FAMILY_NAME).h"/d' $(HEADER) >> $(SINGLE_HEADER)
 	@echo "" >> $(SINGLE_HEADER)
 	@echo "#endif // $(UPPER_LIB_NAME)_SINGLE_H" >> $(SINGLE_HEADER)
 	@echo "Ok"
@@ -332,11 +360,23 @@ else
 	$(AS) $(ASFLAGS) -o $(OBJ) $(C_SRC)
 endif
 
-$(OBJECTS): $(ASM_SOURCES)
-	@echo "Building submodules... (CONFIG=$(CONFIG))... "
-	@$(foreach d,$(OBJ_LIST), \
+#$(OBJECTS): $(ASM_SOURCES)
+#	@echo "Building submodules... (CONFIG=$(CONFIG))... "
+#	@$(foreach d,$(OBJ_LIST), \
+	  if [ -f $(LIBS_DIR)/$(d)/Makefile ]; then \
+	    (echo "\tBuild for $(d) ..." && $(MAKE) -C $(LIBS_DIR)/$(d) -s build CONFIG=release USE_ASM=auto CFLAGS+=-Wl,-z,noexecstack) || echo "\n\t\t⚠️  $(d) no rule build\n"; \
+	  else \
+	    echo "\tSkipping build for $(d) (pre-built distribution)"; \
+	  fi; \
+	)
+
+$(OBJECTS):
+	@echo "Building source submodules... (CONFIG=$(CONFIG))... "
+	@$(foreach d,$(SRC_SUBMODULES), \
 	  (echo "\tBuild for $(d) ..." && $(MAKE) -C $(LIBS_DIR)/$(d) -s build CONFIG=release USE_ASM=auto CFLAGS+=-Wl,-z,noexecstack) || echo "\n\t\t⚠️  $(d) no rule build\n"; \
 	)
+
+
 $(BIN_DIR)/%: $(TESTS_DIR)/%.c $(OBJ) $(OBJECTS) | $(BIN_DIR)
 	@$(MKDIR) $(BIN_DIR)
 	@$(CC) $(CFLAGS) $< $(OBJECTS) $(OBJ) -o $@ $(LDFLAGS) \
@@ -361,8 +401,13 @@ clean:
 	@$(RM) $(BUILD_DIR) $(BIN_DIR) $(DIST_DIR)
 	@echo "Cleaning up submodule artifacts:" ;
 	@$(foreach d,$(OBJ_LIST), \
-	  (printf "%s" "Clean for $(d) : " && $(MAKE) -C $(LIBS_DIR)/$(d) -s clean) || echo "\n\t\t⚠️  $(d) has no rule clean\n"; \
+	  if [ -f $(LIBS_DIR)/$(d)/Makefile ]; then \
+	    (printf "%s" "Clean for $(d) : " && $(MAKE) -C $(LIBS_DIR)/$(d) -s clean) || echo "\n\t\t⚠️  $(d) has no rule clean\n"; \
+	  else \
+	    echo "Skipping clean for $(d) (no Makefile found)"; \
+	  fi; \
 	)
+
 
 help:
 	@echo "Usage: make <target> [CONFIG=release] [REPORT_NAME=my_report]"
@@ -393,6 +438,7 @@ help:
 show-calc:
 	@echo "REPOSITORY_NAME = $(REPOSITORY_NAME)"
 	@echo "FAMILY_NAME = $(FAMILY_NAME)"
+	@echo "UPPER_FAMILY_NAME = $(UPPER_FAMILY_NAME)"
 	@echo "LIB_NAME = $(LIB_NAME)"
 	@echo "UPPER_LIB_NAME = $(UPPER_LIB_NAME)"
 	@echo "NP = $(NP)"
@@ -405,7 +451,6 @@ show-calc:
 	@echo "C_SRC = $(C_SRC)"
 	@echo "HEADER = $(HEADER)"
 	@echo "FAMILY_HEADER = $(FAMILY_HEADER)"
-	@echo "HEADERS = $(HEADERS)"
 	@echo "SRC_EXT = $(SRC_EXT)"
 	@echo "USE_ASM = $(USE_ASM)"
 	@echo "ASM_SRC = $(ASM_SRC)"
@@ -416,3 +461,4 @@ show-calc:
 	@echo "TEST_BINS = $(TEST_BINS)"
 	@echo "SAN = $(SAN) ($(SAN_LABEL))"
 	@echo "HELGRIND = $(HELGRIND)"
+	@echo "DIST_SUBMODULES = $(DIST_SUBMODULES)"
