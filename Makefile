@@ -48,28 +48,37 @@ REPORTS_DIR = $(BENCH_DIR)/reports
 DIST_INCLUDE_DIR = $(DIST_DIR)/$(INCLUDE_DIR)
 DIST_LIB_DIR = $(DIST_DIR)/$(LIBS_DIR)
 
-SUBMODULES  := $(patsubst $(LIBS_DIR)/%/,%,$(filter %/,$(wildcard $(LIBS_DIR)/*/)))
-SUBMODULES_INCLUDE_DIR := $(foreach d,$(SUBMODULES),$(LIBS_DIR)/$(d)/$(INCLUDE_DIR))
-SUBMODULES_INCLUDE_DIR += $(foreach d,$(SUBMODULES),$(LIBS_DIR)/$(d)/$(DIST_DIR))
-OBJ_LIST        := $(patsubst $(LIBS_DIR)/%/,%,$(filter %/,$(wildcard $(LIBS_DIR)/*/)))
+# 1. Очищаем исходный список от любых случайных пробелов сразу при получении
+SUBMODULES_RAW := $(strip $(patsubst $(LIBS_DIR)/%/,%,$(wildcard $(LIBS_DIR)/*/)))
+
+# 2. Собираем финальный список, также оборачивая результат в strip
+SUBMODULES := $(strip $(filter $(COMMON_NAME),$(SUBMODULES_RAW)) $(filter-out $(COMMON_NAME),$(SUBMODULES_RAW)))
 
 # Отделяем сабмодули с исходниками (есть Makefile) от вендорных (нет Makefile)
-SRC_SUBMODULES  := $(foreach d,$(OBJ_LIST),$(if $(wildcard $(LIBS_DIR)/$(d)/Makefile),$(d),))
-DIST_SUBMODULES := $(filter-out $(SRC_SUBMODULES),$(OBJ_LIST))
+SRC_SUBMODULES  := $(foreach d,$(SUBMODULES),$(if $(wildcard $(LIBS_DIR)/$(d)/Makefile),$(d),))
+DIST_SUBMODULES := $(filter-out $(SRC_SUBMODULES),$(SUBMODULES))  
+
+SUBMODULES_INCLUDE_DIR := $(foreach d,$(SRC_SUBMODULES),$(LIBS_DIR)/$(d)/$(INCLUDE_DIR))
+# Проверка: если результат фильтрации по bignum-common не пуст, значит он там есть
+ifneq ($(filter $(COMMON_NAME),$(DIST_SUBMODULES)),)
+    # Добавляем путь в начало списка
+    SUBMODULES_INCLUDE_DIR := $(LIBS_DIR)/$(COMMON_NAME)/$(DIST_DIR) $(SUBMODULES_INCLUDE_DIR)
+else
+    SUBMODULES_INCLUDE_DIR += $(foreach d,$(DIST_SUBMODULES),$(LIBS_DIR)/$(d)/$(DIST_DIR))   
+endif
+
+SUBMODULES_DIST_DIR := $(foreach d,$(DIST_SUBMODULES),$(LIBS_DIR)/$(d)/$(DIST_DIR))
+SUBMODULES_DIST_LIB := $(foreach d,$(DIST_SUBMODULES),$(subst -,_,$(d)))
 
 # Собираем OBJECTS только для тех сабмодулей, у которых реально есть исходники в src/
 OBJECTS         := $(foreach d,$(SRC_SUBMODULES),$(if $(wildcard $(LIBS_DIR)/$(d)/src/$(subst -,_,$(d)).c $(LIBS_DIR)/$(d)/src/$(subst -,_,$(d)).asm),$(LIBS_DIR)/$(d)/build/$(subst -,_,$(d)).o,))
 
-#ASM_SOURCES := $(foreach d,$(OBJ_LIST),$(LIBS_DIR)/$(d)/$(SRC_DIR)/$(subst -,_,$(d)).asm)
-#C_SOURCES   := $(foreach d,$(OBJ_LIST),$(LIBS_DIR)/$(d)/$(SRC_DIR)/$(subst -,_,$(d)).c)
-#HEADERS     := $(foreach d,$(OBJ_LIST),$(LIBS_DIR)/$(d)/$(INCLUDE_DIR)/$(subst -,_,$(d)).h)
 # Собираем все заголовочные файлы сабмодулей
 SUBMODULES_HEADERS_RAW := $(foreach dir,$(SUBMODULES_INCLUDE_DIR),$(wildcard $(dir)/*.h))
 
 # Выносим bignum.h на первое место, а затем добавляем все остальные файлы
 SUBMODULES_HEADERS := $(filter $(COMMON_DIR)/$(INCLUDE_DIR)/$(FAMILY_NAME).h, $(SUBMODULES_HEADERS_RAW)) \
                       $(filter-out $(COMMON_DIR)/$(INCLUDE_DIR)/$(FAMILY_NAME).h, $(SUBMODULES_HEADERS_RAW))
-
 
 # --- Source & Target Files ---
 ASM_SRC := $(SRC_DIR)/$(LIB_NAME).asm
@@ -106,12 +115,17 @@ SINGLE_HEADER = $(DIST_DIR)/$(LIB_NAME).h
 # --- Flags ---
 CFLAGS_BASE = -std=c11 -Wall -Wextra -pedantic -I$(INCLUDE_DIR) $(addprefix -I , $(SUBMODULES_INCLUDE_DIR))
 ASFLAGS_BASE = -f elf64
-LDFLAGS = -no-pie -lm
+LDFLAGS = -no-pie -lm 
 
 # Динамически линкуем все вендорные библиотеки (те, что попали в DIST_SUBMODULES)
 # Заменяем дефисы на подчеркивания для имени библиотеки (например, bignum-common -> -lbignum_common)
-LDFLAGS += $(foreach d,$(DIST_SUBMODULES),-L$(LIBS_DIR)/$(d)/dist -l$(subst -,_,$(d)))
+# $(addprefix -L, $(SUBMODULES_DIST_DIR)) $(addprefix -l, $(SUBMODULES_DIST_LIB))
+LDFLAGS += $(foreach d,$(DIST_SUBMODULES),-L$(LIBS_DIR)/$(d)/dist -l$(subst -,_,$(d))) 
 
+#Особый случай/Special Case
+ifeq ($(strip $(REPOSITORY_NAME)),bignum-shift-right)
+    LDFLAGS += -lgmp
+endif
 
 # --- Sanitizer flags ---
 ifeq ($(strip $(SAN)),address)
@@ -163,7 +177,7 @@ REPORT_FILE_MT = $(REPORTS_DIR)/$(REPORT_NAME)_mt.txt
 RECORD_OPT = -F 1000 -e cycles,cache-misses,branch-misses -g --call-graph fp
 REPORT_OPT = --percent-limit 1.0 --sort comm,dso,symbol --symbol-filter=$(PERF_SYMBOL_FILTER)
 
-.PHONY: all build lint test test_sanitize test_helgrind bench install dist clean help show-calc
+.PHONY: all build lint test test_sanitize test_helgrind bench install generate-header dist clean help show-calc
 
 all: build
 build: $(OBJ) $(OBJECTS)
@@ -290,6 +304,71 @@ install: clean $(OBJ) $(OBJECTS) | $(DIST_INCLUDE_DIR) $(DIST_LIB_DIR)
 	@$(DIST_DIR)/test_$(LIB_NAME)_runner
 	@$(RM) $(DIST_DIR)/test_$(LIB_NAME)_runner
 
+generate-header:
+	@$(MKDIR) $(DIST_DIR)
+	@printf "%s" "Generating single-file header..."
+	@echo "#ifndef $(UPPER_LIB_NAME)_SINGLE_H" > $(SINGLE_HEADER)
+	@echo "#define $(UPPER_LIB_NAME)_SINGLE_H" >> $(SINGLE_HEADER)
+	@echo "" >> $(SINGLE_HEADER)
+	@sed -e '/#include "$(FAMILY_NAME).h"/d' -e '/#include <$(FAMILY_NAME).h>/d' $(SUBMODULES_HEADERS) >> $(SINGLE_HEADER)
+	@echo "/* --- Included from include/$(LIB_NAME).h --- */" >> $(SINGLE_HEADER)
+	@sed -e '/$(UPPER_LIB_NAME)_H/d' -e '/#include <$(FAMILY_NAME).h>/d' -e '/#include "$(FAMILY_NAME).h"/d' $(HEADER) >> $(SINGLE_HEADER)	
+	@echo "" >> $(SINGLE_HEADER)
+	@echo "#endif // $(UPPER_LIB_NAME)_SINGLE_H" >> $(SINGLE_HEADER)
+	@echo "\n\tStep 1: Removing duplicate code blocks..."
+	@awk ' \
+	BEGIN { in_guard = 0; depth = 0; } \
+	{ \
+		stripped = $$0; sub(/^[[:space:]]*/, "", stripped); \
+		if (in_guard == 1) { \
+			if (stripped ~ /^#(if|ifndef|ifdef)/) { depth++; } \
+			else if (stripped ~ /^#endif/) { \
+				depth--; \
+				if (depth == 0) in_guard = 0; \
+			} \
+			next; \
+		} \
+		if (stripped ~ /^#ifndef[[:space:]]+[A-Za-z0-9_]+/) { \
+			split(stripped, p, /[[:space:]]+/); name = p[2]; \
+			if (seen[name]) { in_guard = 1; depth = 1; next; } \
+			seen[name] = 1; \
+		} \
+		print $$0; \
+	}' $(SINGLE_HEADER) > $(SINGLE_HEADER)_tmp.h
+	@echo "\tStep 2: Removing duplicate Doxygen blocks..."
+	@awk ' \
+	BEGIN { in_comment = 0; } \
+	{ \
+		stripped = $$0; sub(/^[[:space:]]*/, "", stripped); \
+		if (in_comment == 1) { \
+			if (stripped ~ /\*\//) { in_comment = 0; } \
+			next; \
+		} \
+		if (stripped ~ /^\/\*\*/) { \
+			# Мы нашли Doxygen-блок. Проверяем, видели ли мы его раньше. \
+			# Чтобы идентифицировать блок, мы создаем хеш из первых двух строк. \
+			block_id = stripped; \
+			getline next_line; \
+			block_id = block_id " " next_line; \
+			\
+			if (seen_doc[block_id]) { \
+				in_comment = 1; \
+				# Нужно пропустить текущую строку, так как она уже в block_id \
+				# Но мы должны проверить, не закрылся ли комментарий сразу \
+				if (next_line ~ /\*\//) { in_comment = 0; } \
+				next; \
+			} \
+			seen_doc[block_id] = 1; \
+			print stripped; \
+			print next_line; \
+			next; \
+		} \
+		print $$0; \
+	}' $(SINGLE_HEADER)_tmp.h > $(SINGLE_HEADER)_final.h
+	@rm -f $(SINGLE_HEADER)_tmp.h
+	@mv $(SINGLE_HEADER)_final.h $(SINGLE_HEADER)
+	@echo "Done. Result saved to $(SINGLE_HEADER)"		
+	@echo "Ok"
 
 dist: clean
 	@echo "Creating single-file header distribution in $(DIST_DIR)/ (CONFIG=$(CONFIG))...."
@@ -311,26 +390,7 @@ dist: clean
 	@$(RL) $(STATIC_LIB)
 	@echo "Ok"
 	@$(NM) -g --defined-only  $(STATIC_LIB)
-	@printf "%s"  "Generating single-file header..."
-	@echo "#ifndef $(UPPER_LIB_NAME)_SINGLE_H" > $(SINGLE_HEADER)
-	@echo "#define $(UPPER_LIB_NAME)_SINGLE_H" >> $(SINGLE_HEADER)
-	@echo "" >> $(SINGLE_HEADER)
-	@if [ -f "$(INCLUDE_DIR)/$(FAMILY_NAME).h" ]; then \
-	echo "/* --- Included from /include/$(FAMILY_NAME).h --- */" >> $(SINGLE_HEADER); \
-	cat "$(INCLUDE_DIR)/$(FAMILY_NAME).h" >> $(SINGLE_HEADER); \
-	fi
-	@if [ -f $(COMMON_DIR)/$(INCLUDE_DIR)/$(FAMILY_NAME).h ]; then \
-	echo "/* --- Included from libs/$(COMMON_NAME)/include/$(FAMILY_NAME).h --- */" >> $(SINGLE_HEADER); \
-	sed -e '/#include "$(FAMILY_NAME).h"/d' -e '/#include <$(FAMILY_NAME).h>/d' $(SUBMODULES_HEADERS) >> $(SINGLE_HEADER); \
-	echo "" >> $(SINGLE_HEADER); \
-	else \
-	echo "/* --- No family header at $(COMMON_DIR)/$(INCLUDE_DIR)/$(FAMILY_NAME).h — skipped --- */" >> $(SINGLE_HEADER); \
-	fi
-	@echo "/* --- Included from include/$(LIB_NAME).h --- */" >> $(SINGLE_HEADER)
-	@sed -e '/#include <$(FAMILY_NAME).h>/d' -e '/#include "$(FAMILY_NAME).h"/d' $(HEADER) >> $(SINGLE_HEADER)
-	@echo "" >> $(SINGLE_HEADER)
-	@echo "#endif // $(UPPER_LIB_NAME)_SINGLE_H" >> $(SINGLE_HEADER)
-	@echo "Ok"
+	@$(MAKE) -s generate-header
 	@cp README.md $(DIST_DIR)/
 	@cp LICENSE $(DIST_DIR)/
 	@cp $(TESTS_DIR)/test_$(LIB_NAME)_runner.c $(DIST_DIR)/
@@ -394,13 +454,13 @@ lint:
 	@$(CPPCHECK) --std=c11 --enable=all --error-exitcode=1 --suppress=missingIncludeSystem \
 	    --inline-suppr --inconclusive --check-config \
 	    -I$(INCLUDE_DIR) $(addprefix -I , $(SUBMODULES_INCLUDE_DIR)) \
-	    $(TESTS_DIR)/ $(BENCH_DIR)/ $(DIST_DIR)/ $(SRC_DIR)/
+	    $(TESTS_DIR)/ $(BENCH_DIR)/ $(DIST_DIR)/ $(SRC_DIR)/ $(LIBS_DIR)/
 
 clean:
 	@echo "Cleaning up build artifacts (build/, bin/, dist/)..."
 	@$(RM) $(BUILD_DIR) $(BIN_DIR) $(DIST_DIR)
 	@echo "Cleaning up submodule artifacts:" ;
-	@$(foreach d,$(OBJ_LIST), \
+	@$(foreach d,$(SRC_SUBMODULES), \
 	  if [ -f $(LIBS_DIR)/$(d)/Makefile ]; then \
 	    (printf "%s" "Clean for $(d) : " && $(MAKE) -C $(LIBS_DIR)/$(d) -s clean) || echo "\n\t\t⚠️  $(d) has no rule clean\n"; \
 	  else \
@@ -438,7 +498,6 @@ help:
 show-calc:
 	@echo "REPOSITORY_NAME = $(REPOSITORY_NAME)"
 	@echo "FAMILY_NAME = $(FAMILY_NAME)"
-	@echo "UPPER_FAMILY_NAME = $(UPPER_FAMILY_NAME)"
 	@echo "LIB_NAME = $(LIB_NAME)"
 	@echo "UPPER_LIB_NAME = $(UPPER_LIB_NAME)"
 	@echo "NP = $(NP)"
@@ -446,19 +505,22 @@ show-calc:
 	@echo "Количество меток: $(words $(subst |, ,$(ASM_LABELS)))"
 	@echo "OBJ = $(OBJ)"
 	@echo "OBJECTS = $(OBJECTS)"
-	@echo "OBJ_LIST = $(OBJ_LIST)"
-	@echo "ASM_SOURCES = $(ASM_SOURCES)"
 	@echo "C_SRC = $(C_SRC)"
 	@echo "HEADER = $(HEADER)"
 	@echo "FAMILY_HEADER = $(FAMILY_HEADER)"
+	@echo "HEADERS = $(HEADERS)"
 	@echo "SRC_EXT = $(SRC_EXT)"
 	@echo "USE_ASM = $(USE_ASM)"
 	@echo "ASM_SRC = $(ASM_SRC)"
-	@echo "SUBMODULES = $(SUBMODULES)"
+	@echo "SUBMODULES = '$(SUBMODULES)'"
 	@echo "SUBMODULES_INCLUDE_DIR = $(SUBMODULES_INCLUDE_DIR)"
+	@echo "SUBMODULES_DIST_DIR = $(SUBMODULES_DIST_DIR)"
+	@echo "SUBMODULES_DIST_LIB = $(SUBMODULES_DIST_LIB)"	
+	@echo "SUBMODULES_HEADERS_RAW = $(SUBMODULES_HEADERS_RAW)"	
 	@echo "SUBMODULES_HEADERS = $(SUBMODULES_HEADERS)"
 	@echo "TEST_BINS_MT = $(TEST_BINS_MT)"
 	@echo "TEST_BINS = $(TEST_BINS)"
 	@echo "SAN = $(SAN) ($(SAN_LABEL))"
 	@echo "HELGRIND = $(HELGRIND)"
-	@echo "DIST_SUBMODULES = $(DIST_SUBMODULES)"
+	@echo "SRC_SUBMODULES = $(SRC_SUBMODULES)"	
+	@echo "DIST_SUBMODULES = $(DIST_SUBMODULES)"	
