@@ -14,6 +14,7 @@ VALGRIND ?= valgrind
 # --- Calculated Variables ---
 REPOSITORY_NAME := $(notdir $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST))))))
 FAMILY_NAME := $(firstword $(subst -, ,$(REPOSITORY_NAME)))
+OPERATION_NAME := $(strip $(patsubst $(FAMILY_NAME)-%,%,$(REPOSITORY_NAME)))
 UPPER_FAMILY_NAME := $(subst z,Z,$(subst y,Y,$(subst x,X,$(subst w,W,$(subst v,V,$(subst u,U,$(subst t,T,$(subst s,S,$(subst r,R,$(subst q,Q,$(subst p,P,$(subst o,O,$(subst n,N,$(subst m,M,$(subst l,L,$(subst k,K,$(subst j,J,$(subst i,I,$(subst h,H,$(subst g,G,$(subst f,F,$(subst e,E,$(subst d,D,$(subst c,C,$(subst b,B,$(subst a,A,$(FAMILY_NAME)))))))))))))))))))))))))))
 LIB_NAME := $(subst -,_,$(notdir $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))))
 UPPER_LIB_NAME := $(subst z,Z,$(subst y,Y,$(subst x,X,$(subst w,W,$(subst v,V,$(subst u,U,$(subst t,T,$(subst s,S,$(subst r,R,$(subst q,Q,$(subst p,P,$(subst o,O,$(subst n,N,$(subst m,M,$(subst l,L,$(subst k,K,$(subst j,J,$(subst i,I,$(subst h,H,$(subst g,G,$(subst f,F,$(subst e,E,$(subst d,D,$(subst c,C,$(subst b,B,$(subst a,A,$(LIB_NAME)))))))))))))))))))))))))))
@@ -123,7 +124,7 @@ LDFLAGS = -no-pie -lm
 LDFLAGS += $(foreach d,$(DIST_SUBMODULES),-L$(LIBS_DIR)/$(d)/dist -l$(subst -,_,$(d))) 
 
 #Особый случай/Special Case
-ifeq ($(strip $(REPOSITORY_NAME)),bignum-shift-right)
+ifeq ($(strip $(OPERATION_NAME)),shift-right)
     LDFLAGS += -lgmp
 endif
 
@@ -310,9 +311,14 @@ generate-header:
 	@echo "#ifndef $(UPPER_LIB_NAME)_SINGLE_H" > $(SINGLE_HEADER)
 	@echo "#define $(UPPER_LIB_NAME)_SINGLE_H" >> $(SINGLE_HEADER)
 	@echo "" >> $(SINGLE_HEADER)
-	@sed -e '/#include "$(FAMILY_NAME).h"/d' -e '/#include <$(FAMILY_NAME).h>/d' $(SUBMODULES_HEADERS) >> $(SINGLE_HEADER)
-	@echo "/* --- Included from include/$(LIB_NAME).h --- */" >> $(SINGLE_HEADER)
-	@sed -e '/$(UPPER_LIB_NAME)_H/d' -e '/#include <$(FAMILY_NAME).h>/d' -e '/#include "$(FAMILY_NAME).h"/d' $(HEADER) >> $(SINGLE_HEADER)	
+	@if [ -n "$(strip $(SUBMODULES_HEADERS))" ]; then \
+		sed -e '/#include "$(FAMILY_NAME).h"/d' -e '/#include <$(FAMILY_NAME).h>/d' $(SUBMODULES_HEADERS) >> $(SINGLE_HEADER); \
+	else \
+		echo "\n\tSubmodules is empty. Use family header"; \
+		sed -e '/#include "$(FAMILY_NAME).h"/d' -e '/#include <$(FAMILY_NAME).h>/d' $(FAMILY_HEADER) >> $(SINGLE_HEADER); \
+	fi
+	echo "\n/* --- Included from include/$(LIB_NAME).h --- */" >> $(SINGLE_HEADER)
+	sed -e '/$(UPPER_LIB_NAME)_H/d' -e '/#include <$(FAMILY_NAME).h>/d' -e '/#include "$(FAMILY_NAME).h"/d' $(HEADER) >> $(SINGLE_HEADER)	
 	@echo "" >> $(SINGLE_HEADER)
 	@echo "#endif // $(UPPER_LIB_NAME)_SINGLE_H" >> $(SINGLE_HEADER)
 	@echo "\n\tStep 1: Removing duplicate code blocks..."
@@ -420,15 +426,6 @@ else
 	$(AS) $(ASFLAGS) -o $(OBJ) $(C_SRC)
 endif
 
-#$(OBJECTS): $(ASM_SOURCES)
-#	@echo "Building submodules... (CONFIG=$(CONFIG))... "
-#	@$(foreach d,$(OBJ_LIST), \
-	  if [ -f $(LIBS_DIR)/$(d)/Makefile ]; then \
-	    (echo "\tBuild for $(d) ..." && $(MAKE) -C $(LIBS_DIR)/$(d) -s build CONFIG=release USE_ASM=auto CFLAGS+=-Wl,-z,noexecstack) || echo "\n\t\t⚠️  $(d) no rule build\n"; \
-	  else \
-	    echo "\tSkipping build for $(d) (pre-built distribution)"; \
-	  fi; \
-	)
 
 $(OBJECTS):
 	@echo "Building source submodules... (CONFIG=$(CONFIG))... "
@@ -498,6 +495,7 @@ help:
 show-calc:
 	@echo "REPOSITORY_NAME = $(REPOSITORY_NAME)"
 	@echo "FAMILY_NAME = $(FAMILY_NAME)"
+	@echo "OPERATION_NAME = $(OPERATION_NAME)"	
 	@echo "LIB_NAME = $(LIB_NAME)"
 	@echo "UPPER_LIB_NAME = $(UPPER_LIB_NAME)"
 	@echo "NP = $(NP)"
@@ -509,6 +507,7 @@ show-calc:
 	@echo "HEADER = $(HEADER)"
 	@echo "FAMILY_HEADER = $(FAMILY_HEADER)"
 	@echo "HEADERS = $(HEADERS)"
+	@echo "SINGLE_HEADER = $(SINGLE_HEADER)"
 	@echo "SRC_EXT = $(SRC_EXT)"
 	@echo "USE_ASM = $(USE_ASM)"
 	@echo "ASM_SRC = $(ASM_SRC)"
