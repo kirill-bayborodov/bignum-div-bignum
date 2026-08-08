@@ -80,7 +80,7 @@ jobs:
         done
 
     - name: Install build dependencies
-      run: sudo apt-get update && sudo apt-get install -y build-essential yasm cppcheck
+      run: sudo apt-get update && sudo apt-get install -y build-essential yasm cppcheck valgrind
 
     - name: Build project (Release)
       run: make build CONFIG=release
@@ -89,7 +89,7 @@ jobs:
       run: make lint
 
     - name: Run unit tests (Release)
-      run: make test CONFIG=release
+      run: make test CONFIG=release && make test_sanitize SAN=address CONFIG=release && make test_sanitize SAN=undefined CONFIG=release && make test_helgrind CONFIG=release
 
     - name: Create distribution
       run: make dist

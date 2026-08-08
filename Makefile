@@ -56,17 +56,25 @@ SUBMODULES_RAW := $(strip $(patsubst $(LIBS_DIR)/%/,%,$(wildcard $(LIBS_DIR)/*/)
 SUBMODULES := $(strip $(filter $(COMMON_NAME),$(SUBMODULES_RAW)) $(filter-out $(COMMON_NAME),$(SUBMODULES_RAW)))
 
 # Отделяем сабмодули с исходниками (есть Makefile) от вендорных (нет Makefile)
-SRC_SUBMODULES  := $(foreach d,$(SUBMODULES),$(if $(wildcard $(LIBS_DIR)/$(d)/Makefile),$(d),))
-DIST_SUBMODULES := $(filter-out $(SRC_SUBMODULES),$(SUBMODULES))  
+SRC_SUBMODULES  := $(strip $(foreach d,$(SUBMODULES),$(if $(wildcard $(LIBS_DIR)/$(d)/Makefile),$(d),)))
+DIST_SUBMODULES := $(strip $(filter-out $(SRC_SUBMODULES),$(SUBMODULES))) 
 
-SUBMODULES_INCLUDE_DIR := $(foreach d,$(SRC_SUBMODULES),$(LIBS_DIR)/$(d)/$(INCLUDE_DIR))
-# Проверка: если результат фильтрации по bignum-common не пуст, значит он там есть
-ifneq ($(filter $(COMMON_NAME),$(DIST_SUBMODULES)),)
-    # Добавляем путь в начало списка
-    SUBMODULES_INCLUDE_DIR := $(LIBS_DIR)/$(COMMON_NAME)/$(DIST_DIR) $(SUBMODULES_INCLUDE_DIR)
+# 1. Генерируем все возможные пути для обоих типов модулей
+SRC_PATHS = $(foreach d,$(SRC_SUBMODULES),$(LIBS_DIR)/$(d)/$(INCLUDE_DIR))
+DIST_PATHS = $(foreach d,$(DIST_SUBMODULES),$(LIBS_DIR)/$(d)/$(DIST_DIR))
+
+# 2. Определяем конкретный путь к COMMON_NAME (динамический выбор папки)
+ifeq ($(filter $(strip $(COMMON_NAME)),$(strip $(DIST_SUBMODULES))),)
+    TARGET_PATH = $(LIBS_DIR)/$(COMMON_NAME)/$(INCLUDE_DIR)
 else
-    SUBMODULES_INCLUDE_DIR += $(foreach d,$(DIST_SUBMODULES),$(LIBS_DIR)/$(d)/$(DIST_DIR))   
+    TARGET_PATH = $(LIBS_DIR)/$(COMMON_NAME)/$(DIST_DIR)
 endif
+
+# 3. Объединяем все пути, но вычитаем TARGET_PATH из общего массива, 
+# чтобы затем поставить его первым без дублирования.
+ALL_PATHS = $(SRC_PATHS) $(DIST_PATHS)
+SUBMODULES_INCLUDE_DIR = $(TARGET_PATH) $(filter-out $(TARGET_PATH),$(ALL_PATHS))
+
 
 SUBMODULES_DIST_DIR := $(foreach d,$(DIST_SUBMODULES),$(LIBS_DIR)/$(d)/$(DIST_DIR))
 SUBMODULES_DIST_LIB := $(foreach d,$(DIST_SUBMODULES),$(subst -,_,$(d)))
@@ -493,33 +501,34 @@ help:
 	@echo "  5. diff -u benchmarks/reports/baseline_st.txt benchmarks/reports/opt_v1_st.txt"	
 
 show-calc:
-	@echo "REPOSITORY_NAME = $(REPOSITORY_NAME)"
-	@echo "FAMILY_NAME = $(FAMILY_NAME)"
-	@echo "OPERATION_NAME = $(OPERATION_NAME)"	
-	@echo "LIB_NAME = $(LIB_NAME)"
-	@echo "UPPER_LIB_NAME = $(UPPER_LIB_NAME)"
-	@echo "NP = $(NP)"
-	@echo "ASM_LABELS = $(ASM_LABELS)"
+	@echo "REPOSITORY_NAME = '$(REPOSITORY_NAME)'"
+	@echo "FAMILY_NAME = '$(FAMILY_NAME)'"
+	@echo "OPERATION_NAME = '$(OPERATION_NAME)'"	
+	@echo "LIB_NAME = '$(LIB_NAME)'"
+	@echo "UPPER_LIB_NAME = '$(UPPER_LIB_NAME)'"
+	@echo "NP = '$(NP)'"
+	@echo "ASM_LABELS = '$(ASM_LABELS)'"
 	@echo "Количество меток: $(words $(subst |, ,$(ASM_LABELS)))"
-	@echo "OBJ = $(OBJ)"
-	@echo "OBJECTS = $(OBJECTS)"
-	@echo "C_SRC = $(C_SRC)"
-	@echo "HEADER = $(HEADER)"
-	@echo "FAMILY_HEADER = $(FAMILY_HEADER)"
-	@echo "HEADERS = $(HEADERS)"
-	@echo "SINGLE_HEADER = $(SINGLE_HEADER)"
-	@echo "SRC_EXT = $(SRC_EXT)"
-	@echo "USE_ASM = $(USE_ASM)"
-	@echo "ASM_SRC = $(ASM_SRC)"
+	@echo "OBJ = '$(OBJ)'"
+	@echo "OBJECTS = '$(OBJECTS)'"
+	@echo "C_SRC = '$(C_SRC)'"
+	@echo "HEADER = '$(HEADER)'"
+	@echo "FAMILY_HEADER = '$(FAMILY_HEADER)'"
+	@echo "HEADERS = '$(HEADERS)'"
+	@echo "SINGLE_HEADER = '$(SINGLE_HEADER)'"
+	@echo "SRC_EXT = '$(SRC_EXT)'"
+	@echo "USE_ASM = '$(USE_ASM)'"
+	@echo "ASM_SRC = '$(ASM_SRC)'"
 	@echo "SUBMODULES = '$(SUBMODULES)'"
-	@echo "SUBMODULES_INCLUDE_DIR = $(SUBMODULES_INCLUDE_DIR)"
-	@echo "SUBMODULES_DIST_DIR = $(SUBMODULES_DIST_DIR)"
-	@echo "SUBMODULES_DIST_LIB = $(SUBMODULES_DIST_LIB)"	
-	@echo "SUBMODULES_HEADERS_RAW = $(SUBMODULES_HEADERS_RAW)"	
-	@echo "SUBMODULES_HEADERS = $(SUBMODULES_HEADERS)"
-	@echo "TEST_BINS_MT = $(TEST_BINS_MT)"
-	@echo "TEST_BINS = $(TEST_BINS)"
+	@echo "COMMON_NAME = '$(COMMON_NAME)'"	
+	@echo "SUBMODULES_INCLUDE_DIR = '$(SUBMODULES_INCLUDE_DIR)'"
+	@echo "SUBMODULES_DIST_DIR = '$(SUBMODULES_DIST_DIR)'"
+	@echo "SUBMODULES_DIST_LIB = '$(SUBMODULES_DIST_LIB)'"	
+	@echo "SUBMODULES_HEADERS_RAW = '$(SUBMODULES_HEADERS_RAW)'"	
+	@echo "SUBMODULES_HEADERS = '$(SUBMODULES_HEADERS)'"
+	@echo "TEST_BINS_MT = '$(TEST_BINS_MT)'"
+	@echo "TEST_BINS = '$(TEST_BINS)'"
 	@echo "SAN = $(SAN) ($(SAN_LABEL))"
 	@echo "HELGRIND = $(HELGRIND)"
-	@echo "SRC_SUBMODULES = $(SRC_SUBMODULES)"	
-	@echo "DIST_SUBMODULES = $(DIST_SUBMODULES)"	
+	@echo "SRC_SUBMODULES = '$(SRC_SUBMODULES)'"	
+	@echo "DIST_SUBMODULES = '$(DIST_SUBMODULES)'"	
