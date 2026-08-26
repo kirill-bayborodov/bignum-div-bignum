@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "description": "Full domain-specific matrix for reproducible bignum_div_bignum left-subtract test benchmarking, including operand length and near-capacity scenarios.",
+  "profiles": [
+    {
+      "id": "zero-one-end-to-end",
+      "input_kind": "zero",
+      "operation_kind": "div_bignum",
+      "measure_mode": "end-to-end",
+      "size_profile": "one",
+      "capacity_profile": "normal"
+    },
+    {
+      "id": "nonzero-one-zero-kernel",
+      "input_kind": "nonzero",
+      "operation_kind": "div_bignum",
+      "measure_mode": "kernel-only",
+      "size_profile": "one",
+      "capacity_profile": "normal"
+    },
+    {
+      "id": "nonzero-one-subtract-kernel",
+      "input_kind": "nonzero",
+      "operation_kind": "div_bignum",
+      "measure_mode": "kernel-only",
+      "size_profile": "one",
+      "capacity_profile": "normal"
+    },
+    {
+      "id": "nonzero-quarter-subtract-kernel",
+      "input_kind": "nonzero",
+      "operation_kind": "div_bignum",
+      "measure_mode": "kernel-only",
+      "size_profile": "quarter",
+      "capacity_profile": "normal"
+    },
+    {
+      "id": "nonzero-quarter-word-kernel",
+      "input_kind": "nonzero",
+      "operation_kind": "div_bignum",
+      "measure_mode": "kernel-only",
+      "size_profile": "quarter",
+      "capacity_profile": "normal"
+    },
+    {
+      "id": "nonzero-half-word-kernel",
+      "input_kind": "nonzero",
+      "operation_kind": "div_bignum",
+      "measure_mode": "kernel-only",
+      "size_profile": "half",
+      "capacity_profile": "normal"
+    },
+    {
+      "id": "nonzero-half-combined-kernel",
+      "input_kind": "nonzero",
+      "operation_kind": "div_bignum",
+      "measure_mode": "kernel-only",
+      "size_profile": "half",
+      "capacity_profile": "normal"
+    },
+    {
+      "id": "nonzero-variable-random-end-to-end",
+      "input_kind": "nonzero",
+      "operation_kind": "div_bignum",
+      "measure_mode": "end-to-end",
+      "size_profile": "variable",
+      "capacity_profile": "normal"
+    },
+    {
+      "id": "mixed-variable-mixed-end-to-end",
+      "input_kind": "mixed",
+      "operation_kind": "mixed",
+      "measure_mode": "end-to-end",
+      "size_profile": "variable",
+      "capacity_profile": "normal"
+    },
+    {
+      "id": "near-capacity-subtract-kernel",
+      "input_kind": "nonzero",
+      "operation_kind": "div_bignum",
+      "measure_mode": "kernel-only",
+      "size_profile": "near-capacity",
+      "capacity_profile": "near-capacity"
+    },
+    {
+      "id": "near-capacity-subtract-end-to-end",
+      "input_kind": "nonzero",
+      "operation_kind": "div_bignum",
+      "measure_mode": "end-to-end",
+      "size_profile": "near-capacity",
+      "capacity_profile": "near-capacity"
+    },
+    {
+      "id": "near-capacity-word-kernel",
+      "input_kind": "nonzero",
+      "operation_kind": "div_bignum",
+      "measure_mode": "kernel-only",
+      "size_profile": "near-capacity",
+      "capacity_profile": "near-capacity"
+    }
+  ]
+}

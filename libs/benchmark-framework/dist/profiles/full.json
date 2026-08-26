@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "description": "Full domain-neutral profile matrix for regression analysis of in-place operations.",
+  "profiles": [
+    {"id":"zero-tiny-noop-end-to-end","input_kind":"zero","operation_kind":"noop","measure_mode":"end-to-end","size_profile":"tiny","capacity_profile":"normal"},
+    {"id":"zero-small-xor-kernel","input_kind":"zero","operation_kind":"xor","measure_mode":"kernel-only","size_profile":"small","capacity_profile":"normal"},
+    {"id":"nonzero-tiny-xor-kernel","input_kind":"nonzero","operation_kind":"xor","measure_mode":"kernel-only","size_profile":"tiny","capacity_profile":"normal"},
+    {"id":"nonzero-small-rotate-kernel","input_kind":"nonzero","operation_kind":"rotate","measure_mode":"kernel-only","size_profile":"small","capacity_profile":"normal"},
+    {"id":"nonzero-medium-xor-kernel","input_kind":"nonzero","operation_kind":"xor","measure_mode":"kernel-only","size_profile":"medium","capacity_profile":"normal"},
+    {"id":"nonzero-medium-rotate-kernel","input_kind":"nonzero","operation_kind":"rotate","measure_mode":"kernel-only","size_profile":"medium","capacity_profile":"normal"},
+    {"id":"nonzero-large-xor-kernel","input_kind":"nonzero","operation_kind":"xor","measure_mode":"kernel-only","size_profile":"large","capacity_profile":"normal"},
+    {"id":"nonzero-large-rotate-end-to-end","input_kind":"nonzero","operation_kind":"rotate","measure_mode":"end-to-end","size_profile":"large","capacity_profile":"normal"},
+    {"id":"mixed-variable-mixed-end-to-end","input_kind":"mixed","operation_kind":"mixed","measure_mode":"end-to-end","size_profile":"variable","capacity_profile":"normal"},
+    {"id":"near-capacity-xor-kernel","input_kind":"nonzero","operation_kind":"xor","measure_mode":"kernel-only","size_profile":"near-capacity","capacity_profile":"near-capacity"},
+    {"id":"near-capacity-rotate-kernel","input_kind":"nonzero","operation_kind":"rotate","measure_mode":"kernel-only","size_profile":"near-capacity","capacity_profile":"near-capacity"},
+    {"id":"near-capacity-rotate-end-to-end","input_kind":"nonzero","operation_kind":"rotate","measure_mode":"end-to-end","size_profile":"near-capacity","capacity_profile":"near-capacity"}
+  ]
+}
